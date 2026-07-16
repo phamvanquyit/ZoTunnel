@@ -101,19 +101,15 @@ zo-tunnel/
 │   └── zo-tunnel-client/       # Client binary
 ├── web/                        # Dashboard UI (HTML/CSS/JS)
 ├── configs/                    # Example YAML configs
-├── scripts/                    # Install, test scripts
+├── scripts/                    # install.sh, pre-release.sh
 └── .github/                    # Issue templates, PR template
 ```
 
 ## 🧪 Testing
 
 ```bash
-# Unit tests
 cargo test --workspace
-
-# E2E test (requires release build)
-cargo build --release
-bash scripts/e2e_test.sh
+./scripts/pre-release.sh   # fmt + clippy + test (before tagging a release)
 ```
 
 ## 📋 Coding Style

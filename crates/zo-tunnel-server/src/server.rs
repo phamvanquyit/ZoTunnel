@@ -214,13 +214,7 @@ impl Server {
             registry: registry.clone(),
             metrics: metrics.clone(),
             dashboard_token: self.config.dashboard_auth.token.clone(),
-            client_token: self
-                .config
-                .auth
-                .tokens
-                .first()
-                .cloned()
-                .unwrap_or_default(),
+            client_token: self.config.auth.tokens.first().cloned().unwrap_or_default(),
             auth_enabled: self.config.dashboard_auth_enabled(),
             tls_enabled: self.config.traefik.enabled,
             domain: domain.clone(),
@@ -237,10 +231,7 @@ impl Server {
             tracing::warn!("⚠️  Dashboard authentication disabled — dashboard is open to anyone");
         }
 
-        tracing::info!(
-            "📦 Client install: https://dashboard.{}/install",
-            domain
-        );
+        tracing::info!("📦 Client install: https://dashboard.{}/install", domain);
 
         // ── Spawn control channel acceptor ──
         let reg_ctrl = registry.clone();
@@ -248,8 +239,14 @@ impl Server {
         let config_ctrl = self.config.clone();
         let traefik_ctrl = traefik_manager.clone();
         let control_task = tokio::spawn(async move {
-            Self::accept_clients(control_listener, reg_ctrl, met_ctrl, config_ctrl, traefik_ctrl)
-                .await;
+            Self::accept_clients(
+                control_listener,
+                reg_ctrl,
+                met_ctrl,
+                config_ctrl,
+                traefik_ctrl,
+            )
+            .await;
         });
 
         // ── Public HTTP listener (subdomain proxy + dashboard) ──

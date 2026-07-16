@@ -5,8 +5,15 @@ use std::path::Path;
 use subtle::ConstantTimeEq;
 
 /// Reserved subdomains that cannot be used as client IDs.
-pub const RESERVED_SUBDOMAINS: &[&str] =
-    &["dashboard", "connect", "api", "www", "admin", "install", "download"];
+pub const RESERVED_SUBDOMAINS: &[&str] = &[
+    "dashboard",
+    "connect",
+    "api",
+    "www",
+    "admin",
+    "install",
+    "download",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {

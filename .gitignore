@@ -4,6 +4,7 @@ dist/
 *.o
 
 # IDE
+.cursor/
 .vscode/
 .idea/
 *.swp

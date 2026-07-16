@@ -313,10 +313,7 @@ fn spawn_detached(args: &HttpArgs, client_id: &str) -> Result<()> {
     while std::time::Instant::now() < deadline {
         if !is_pid_alive(pid) {
             let log_text = std::fs::read_to_string(log_path(client_id)?).unwrap_or_default();
-            anyhow::bail!(
-                "Background tunnel exited early. Log:\n{}",
-                log_text.trim()
-            );
+            anyhow::bail!("Background tunnel exited early. Log:\n{}", log_text.trim());
         }
         if let Ok(mut f) = std::fs::File::open(log_path(client_id)?) {
             let _ = f.seek(SeekFrom::Start(offset));
@@ -354,10 +351,7 @@ fn spawn_detached(args: &HttpArgs, client_id: &str) -> Result<()> {
 async fn cmd_http(args: HttpArgs) -> Result<()> {
     let cfg = config::ZotunnelConfig::load()?;
     let local_addr = config::normalize_local_addr(&args.addr);
-    let client_id = args
-        .name
-        .clone()
-        .unwrap_or_else(config::generate_name);
+    let client_id = args.name.clone().unwrap_or_else(config::generate_name);
 
     if args.detach && !args.daemon_child {
         return spawn_detached(&args, &client_id);
@@ -389,13 +383,8 @@ async fn cmd_http(args: HttpArgs) -> Result<()> {
     let mut printed = false;
     let quiet = args.daemon_child;
 
-    if !quiet {
-        println!("zotunnel v{}", env!("CARGO_PKG_VERSION"));
-        println!("Connecting to {} as '{}'...", cfg.server, client_id);
-    } else {
-        println!("zotunnel v{}", env!("CARGO_PKG_VERSION"));
-        println!("Connecting to {} as '{}'...", cfg.server, client_id);
-    }
+    println!("zotunnel v{}", env!("CARGO_PKG_VERSION"));
+    println!("Connecting to {} as '{}'...", cfg.server, client_id);
 
     let printer = tokio::spawn(async move {
         loop {
