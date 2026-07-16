@@ -34,5 +34,5 @@ tower-http = { workspace = true }
 tokio-rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 subtle = "2"
-getrandom = "0.2"
+getrandom = "0.4"
 socket2 = { workspace = true }
