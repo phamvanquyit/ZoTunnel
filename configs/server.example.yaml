@@ -1,0 +1,28 @@
+# Zo Tunnel Server Configuration
+
+control_port: 6200
+public_port: 6210
+domain: "tunnel.example.com"
+
+auth:
+  tokens:
+    - "your-secret-token-here"
+
+dashboard_auth:
+  token: "your-dashboard-token"
+  session_ttl_secs: 86400
+
+rate_limit:
+  requests_per_second: 100
+  max_connections_per_client: 50
+
+traefik:
+  enabled: true
+  config_dir: "/etc/traefik/dynamic"
+  entrypoint: "websecure"
+  cert_resolver: "letsencrypt"
+  service_url: "http://127.0.0.1:6210"
+
+clients_dir: "/var/lib/zo-tunnel/clients"
+
+log_level: "info"

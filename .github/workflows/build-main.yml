@@ -1,0 +1,164 @@
+name: Build Main
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: build-main
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  IMAGE_NAME: zotunnel
+
+jobs:
+  binaries:
+    name: Binary ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            label: linux-amd64
+
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            label: linux-arm64
+
+          - target: x86_64-apple-darwin
+            os: macos-13
+            label: darwin-amd64
+
+          - target: aarch64-apple-darwin
+            os: macos-14
+            label: darwin-arm64
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: main-${{ matrix.target }}
+
+      - name: Build zotunnel client
+        run: cargo build --release --target ${{ matrix.target }} --bin zotunnel
+
+      - name: Package binary
+        run: |
+          BIN="target/${{ matrix.target }}/release/zotunnel"
+          TAR="zotunnel-${{ matrix.label }}.tar.gz"
+          tar -czf "$TAR" -C "target/${{ matrix.target }}/release" zotunnel
+          cp "$BIN" "zotunnel-${{ matrix.label }}"
+          echo "📦 $TAR ($(du -h "$TAR" | cut -f1))"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: binaries-${{ matrix.label }}
+          path: |
+            *.tar.gz
+            zotunnel-${{ matrix.label }}
+          retention-days: 30
+
+  docker:
+    name: Docker ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-24.04
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Prepare
+        run: |
+          platform="${{ matrix.platform }}"
+          echo "PLATFORM_PAIR=${platform//\//-}" >> "$GITHUB_ENV"
+          echo "IMAGE=${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}" >> "$GITHUB_ENV"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=build-${{ env.PLATFORM_PAIR }}
+          cache-to: type=gha,mode=max,scope=build-${{ env.PLATFORM_PAIR }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  docker-merge:
+    name: Docker merge
+    needs: docker
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=main
+            type=sha,prefix=sha-
+            type=raw,value=latest
+
+      - name: Create multi-arch manifest
+        working-directory: /tmp/digests
+        run: |
+          IMAGE_REF="${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}"
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "${IMAGE_REF}@sha256:%s " *)

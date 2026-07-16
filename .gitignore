@@ -1,0 +1,19 @@
+# Build
+target/
+dist/
+*.o
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+*.pem

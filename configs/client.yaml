@@ -1,0 +1,5 @@
+# Example client config (legacy). Prefer:
+#   zotunnel config set --server HOST:6200 --token TOKEN
+# Config is stored at ~/.zotunnel/config.yaml
+server: "vps:6200"
+token: "your-token"

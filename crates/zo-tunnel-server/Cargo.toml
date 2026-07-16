@@ -1,0 +1,38 @@
+[package]
+name = "zo-tunnel-server"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Zo Tunnel server — subdomain routing with Traefik TLS"
+
+[dependencies]
+zo-tunnel-protocol = { path = "../zo-tunnel-protocol" }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+uuid = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+dashmap = { workspace = true }
+yamux = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+http-body-util = { workspace = true }
+http = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+subtle = "2"
+getrandom = "0.2"
+socket2 = { workspace = true }

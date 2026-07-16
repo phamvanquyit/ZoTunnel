@@ -1,0 +1,17 @@
+services:
+  zo-tunnel:
+    image: ${DOCKER_IMAGE:-phamvanquyit/zotunnel}:main
+    build: .
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      ZO_DOMAIN: ${DOMAIN}
+      ZO_TOKEN: ${AUTH_TOKEN:-}
+      ZO_DASHBOARD_TOKEN: ${DASHBOARD_TOKEN:-}
+      RUST_LOG: info
+    volumes:
+      - zo_config:/etc/zo-tunnel
+      - ${TRAEFIK_DYNAMIC_DIR}:/etc/traefik/dynamic
+
+volumes:
+  zo_config:
