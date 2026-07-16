@@ -59,17 +59,26 @@ curl -sSL https://dashboard.tunnel.example.com/install | bash
 
 With both records, apex install also works: `https://tunnel.example.com/install`.
 
-### 2. Deploy server (Docker + host Traefik)
+### 2. Deploy server (Docker Hub)
 
 Traefik must already run on the host (or as a container with `network_mode: host`) and watch a dynamic directory.
 
 ```bash
+mkdir -p zo-tunnel && cd zo-tunnel
+curl -fsSL -o docker-compose.yml \
+  https://raw.githubusercontent.com/phamvanquyit/ZoTunnel/main/docker-compose.yml
+curl -fsSL -o .env.example \
+  https://raw.githubusercontent.com/phamvanquyit/ZoTunnel/main/.env.example
 cp .env.example .env
 # DOMAIN, AUTH_TOKEN, DASHBOARD_TOKEN
 # TRAEFIK_DYNAMIC_DIR = host path Traefik watches (e.g. /home/docker/traefik/dynamic)
-docker compose up -d --build
-# Or pull the public image: docker compose pull && docker compose up -d
+docker compose pull
+docker compose up -d
 ```
+
+Image: [`phamvanquyit/zotunnel`](https://hub.docker.com/r/phamvanquyit/zotunnel) (`:latest` / `:main`).
+
+To build from source instead: clone the repo and run `docker compose up -d --build`.
 
 zo-tunnel only writes YAML into that directory:
 

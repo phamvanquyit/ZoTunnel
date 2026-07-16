@@ -107,11 +107,28 @@ jobs:
           files: |
             dist/*
           body: |
-            ## Deploy server (Docker)
+            ## Deploy server (Docker Hub)
+
+            No need to clone or build from source:
 
             ```bash
-            cp .env.example .env   # set DOMAIN, ACME_EMAIL
-            docker compose up -d --build
+            mkdir -p zo-tunnel && cd zo-tunnel
+            curl -fsSL -o docker-compose.yml \
+              https://raw.githubusercontent.com/phamvanquyit/ZoTunnel/main/docker-compose.yml
+            curl -fsSL -o .env.example \
+              https://raw.githubusercontent.com/phamvanquyit/ZoTunnel/main/.env.example
+            cp .env.example .env
+            # edit .env: DOMAIN, AUTH_TOKEN, DASHBOARD_TOKEN, TRAEFIK_DYNAMIC_DIR
+            docker compose pull
+            docker compose up -d
+            ```
+
+            Image: [`phamvanquyit/zotunnel`](https://hub.docker.com/r/phamvanquyit/zotunnel) (`:latest` / `:main`)
+
+            Or one-liner:
+
+            ```bash
+            docker pull phamvanquyit/zotunnel:latest
             ```
 
             ## Install client
@@ -119,7 +136,7 @@ jobs:
             Prefer the one-liner from your server:
 
             ```bash
-            curl -sSL https://YOUR_DOMAIN/install | bash
+            curl -sSL https://dashboard.YOUR_DOMAIN/install | bash
             zotunnel config set --server YOUR_DOMAIN:6200 --token TOKEN
             zotunnel http 3000
             ```
