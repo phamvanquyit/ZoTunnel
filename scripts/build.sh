@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Zo Tunnel Cross-Compile Build Script
 # Usage: ./scripts/build.sh [target]
-# Targets: linux-amd64, linux-arm64, macos-amd64, macos-arm64, all
+# Targets: linux-amd64, linux-arm64, macos-arm64, all
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -12,7 +12,6 @@ OUT_DIR="$PROJECT_DIR/dist"
 TARGETS=(
     "x86_64-unknown-linux-gnu:linux-amd64"
     "aarch64-unknown-linux-gnu:linux-arm64"
-    "x86_64-apple-darwin:macos-amd64"
     "aarch64-apple-darwin:macos-arm64"
 )
 
@@ -58,7 +57,7 @@ else
         fi
     done
     echo "❌ Unknown target: $requested"
-    echo "Available: linux-amd64, linux-arm64, macos-amd64, macos-arm64, all, native"
+    echo "Available: linux-amd64, linux-arm64, macos-arm64, all, native"
     exit 1
 fi
 

@@ -34,10 +34,6 @@ jobs:
             label: linux-arm64
             cross: true
 
-          - target: x86_64-apple-darwin
-            os: macos-13
-            label: darwin-amd64
-
           - target: aarch64-apple-darwin
             os: macos-14
             label: darwin-arm64

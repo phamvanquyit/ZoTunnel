@@ -32,10 +32,6 @@ jobs:
             os: ubuntu-24.04-arm
             label: linux-arm64
 
-          - target: x86_64-apple-darwin
-            os: macos-13
-            label: darwin-amd64
-
           - target: aarch64-apple-darwin
             os: macos-14
             label: darwin-arm64

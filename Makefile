@@ -38,9 +38,6 @@ cross-linux-amd64:
 cross-linux-arm64:
 	cross build --release --target aarch64-unknown-linux-gnu -p zo-tunnel-client
 
-cross-macos-amd64:
-	cross build --release --target x86_64-apple-darwin -p zo-tunnel-client
-
 cross-macos-arm64:
 	cross build --release --target aarch64-apple-darwin -p zo-tunnel-client
 
