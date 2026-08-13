@@ -15,6 +15,7 @@ use hyper_util::rt::TokioIo;
 use std::future::poll_fn;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::task::Poll;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot};
@@ -47,6 +48,11 @@ impl YamuxHandle {
     }
 }
 
+enum DriveEvent {
+    Inbound(Option<Result<yamux::Stream, yamux::ConnectionError>>),
+    Outbound(Result<yamux::Stream, yamux::ConnectionError>),
+}
+
 /// Spawns a task that drives the yamux connection.
 /// Returns a handle for opening outbound streams.
 fn spawn_yamux_driver<S>(
@@ -67,91 +73,147 @@ where
         let cfg = yamux::Config::default();
         let mut conn = yamux::Connection::new(compat, cfg, mode);
 
-        // ── Heartbeat timer ──
         let mut heartbeat_interval =
             tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
-        heartbeat_interval.tick().await; // skip first immediate tick
+        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        heartbeat_interval.tick().await;
         let mut missed_heartbeats: u32 = 0;
         const MAX_MISSED: u32 = 5;
 
+        let mut pending_open: Option<oneshot::Sender<anyhow::Result<yamux::Stream>>> = None;
+        let mut want_hb_stream = false;
+        let mut hb_in_flight = false;
+        let (hb_done_tx, mut hb_done_rx) = mpsc::channel::<Result<(), anyhow::Error>>(8);
+
         loop {
+            let want_outbound = pending_open.is_some() || want_hb_stream;
+
             tokio::select! {
-                // Drive the yamux connection (accept inbound streams, process keep-alive)
-                result = poll_fn(|cx| conn.poll_next_inbound(cx)) => {
-                    match result {
-                        Some(Ok(_stream)) => {
-                            tracing::debug!("Unexpected inbound stream from '{}'", client_id);
-                        }
-                        Some(Err(e)) => {
-                            tracing::debug!("Yamux error for '{}': {}", client_id, e);
-                            break;
-                        }
-                        None => {
-                            tracing::info!("Yamux connection closed for '{}'", client_id);
-                            break;
+                event = poll_fn(|cx| {
+                    match conn.poll_next_inbound(cx) {
+                        Poll::Ready(v) => return Poll::Ready(DriveEvent::Inbound(v)),
+                        Poll::Pending => {}
+                    }
+                    if want_outbound {
+                        match conn.poll_new_outbound(cx) {
+                            Poll::Ready(v) => return Poll::Ready(DriveEvent::Outbound(v)),
+                            Poll::Pending => {}
                         }
                     }
+                    Poll::Pending
+                }) => {
+                    match event {
+                        DriveEvent::Inbound(result) => match result {
+                            Some(Ok(_stream)) => {
+                                tracing::debug!("Unexpected inbound stream from '{}'", client_id);
+                            }
+                            Some(Err(e)) => {
+                                tracing::debug!("Yamux error for '{}': {}", client_id, e);
+                                break;
+                            }
+                            None => {
+                                tracing::info!("Yamux connection closed for '{}'", client_id);
+                                break;
+                            }
+                        },
+                        DriveEvent::Outbound(result) => match result {
+                            Ok(stream) => {
+                                if let Some(reply) = pending_open.take() {
+                                    let _ = reply.send(Ok(stream));
+                                } else if want_hb_stream {
+                                    want_hb_stream = false;
+                                    hb_in_flight = true;
+                                    let tx = hb_done_tx.clone();
+                                    tokio::spawn(async move {
+                                        use futures::io::{AsyncReadExt, AsyncWriteExt};
+                                        let result = tokio::time::timeout(
+                                            Duration::from_secs(10),
+                                            async {
+                                                let mut stream = stream;
+                                                stream.write_all(&[STREAM_TYPE_HEARTBEAT]).await?;
+                                                let mut pong = [0u8; 1];
+                                                stream.read_exact(&mut pong).await?;
+                                                stream.close().await?;
+                                                Ok::<(), anyhow::Error>(())
+                                            },
+                                        )
+                                        .await;
+                                        let mapped = match result {
+                                            Ok(Ok(())) => Ok(()),
+                                            Ok(Err(e)) => Err(e),
+                                            Err(_) => Err(anyhow::anyhow!("heartbeat timeout")),
+                                        };
+                                        let _ = tx.send(mapped).await;
+                                    });
+                                }
+                            }
+                            Err(e) => {
+                                if let Some(reply) = pending_open.take() {
+                                    let _ = reply.send(Err(anyhow::anyhow!("yamux open: {}", e)));
+                                }
+                                if want_hb_stream {
+                                    want_hb_stream = false;
+                                    missed_heartbeats += 1;
+                                    tracing::warn!(
+                                        "💔 Heartbeat open failed for '{}': {} ({}/{})",
+                                        client_id,
+                                        e,
+                                        missed_heartbeats,
+                                        MAX_MISSED
+                                    );
+                                    if missed_heartbeats >= MAX_MISSED {
+                                        tracing::error!(
+                                            "💀 Connection dead for '{}' — {} missed heartbeats, disconnecting",
+                                            client_id,
+                                            missed_heartbeats
+                                        );
+                                        break;
+                                    }
+                                }
+                            }
+                        },
+                    }
                 }
-                // Handle commands to open outbound streams
-                cmd = cmd_rx.recv() => {
+                cmd = cmd_rx.recv(), if pending_open.is_none() => {
                     match cmd {
                         Some(YamuxCmd::OpenStream { reply }) => {
-                            let result = poll_fn(|cx| conn.poll_new_outbound(cx)).await;
-                            let _ = reply.send(
-                                result.map_err(|e| anyhow::anyhow!("yamux open: {}", e))
-                            );
+                            pending_open = Some(reply);
                         }
                         None => {
-                            // All handles dropped
                             tracing::debug!("All yamux handles dropped for '{}'", client_id);
                             break;
                         }
                     }
                 }
-                // ── Heartbeat: periodically open a stream to verify connection ──
-                _ = heartbeat_interval.tick(), if supports_heartbeat => {
-                    let hb_result = tokio::time::timeout(
-                        Duration::from_secs(10),
-                        async {
-                            let mut stream = poll_fn(|cx| conn.poll_new_outbound(cx)).await?;
-                            use futures::io::{AsyncReadExt, AsyncWriteExt};
-                            stream.write_all(&[STREAM_TYPE_HEARTBEAT]).await?;
-                            // Wait for pong reply to confirm client is alive
-                            let mut pong = [0u8; 1];
-                            stream.read_exact(&mut pong).await?;
-                            stream.close().await?;
-                            Ok::<(), anyhow::Error>(())
-                        },
-                    )
-                    .await;
-
-                    match hb_result {
-                        Ok(Ok(())) => {
+                _ = heartbeat_interval.tick(), if supports_heartbeat && !hb_in_flight && !want_hb_stream => {
+                    want_hb_stream = true;
+                }
+                done = hb_done_rx.recv() => {
+                    hb_in_flight = false;
+                    match done {
+                        Some(Ok(())) => {
                             missed_heartbeats = 0;
                             tracing::trace!("💓 Heartbeat OK for '{}'", client_id);
                         }
-                        Ok(Err(e)) => {
+                        Some(Err(e)) => {
                             missed_heartbeats += 1;
                             tracing::warn!(
                                 "💔 Heartbeat failed for '{}': {} ({}/{})",
-                                client_id, e, missed_heartbeats, MAX_MISSED
+                                client_id,
+                                e,
+                                missed_heartbeats,
+                                MAX_MISSED
                             );
+                            if missed_heartbeats >= MAX_MISSED {
+                                tracing::error!(
+                                    "💀 Connection dead for '{}' — {} missed heartbeats, disconnecting",
+                                    client_id,
+                                    missed_heartbeats
+                                );
+                                break;
+                            }
                         }
-                        Err(_) => {
-                            missed_heartbeats += 1;
-                            tracing::warn!(
-                                "💔 Heartbeat timeout for '{}' ({}/{})",
-                                client_id, missed_heartbeats, MAX_MISSED
-                            );
-                        }
-                    }
-
-                    if missed_heartbeats >= MAX_MISSED {
-                        tracing::error!(
-                            "💀 Connection dead for '{}' — {} missed heartbeats, disconnecting",
-                            client_id, missed_heartbeats
-                        );
-                        break;
+                        None => break,
                     }
                 }
             }
