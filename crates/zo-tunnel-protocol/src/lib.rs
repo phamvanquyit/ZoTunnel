@@ -33,6 +33,15 @@ pub const HEARTBEAT_INTERVAL_SECS: u64 = 15;
 /// Heartbeat timeout in seconds (5 missed heartbeats)
 pub const HEARTBEAT_TIMEOUT_SECS: u64 = 90;
 
+/// Consecutive missed heartbeats before a reconnect may take over the session.
+/// One miss is treated as jitter (the driver already waits 10s per probe);
+/// two misses (~40s) is a zombie, well before the 5-miss hard disconnect.
+pub const TAKEOVER_AFTER_MISSED_HEARTBEATS: u32 = 2;
+
+/// Wall-clock fallback if the driver stops updating miss counts (or the client
+/// has no heartbeat). Matches the 5-miss disconnect budget.
+pub const SESSION_STALE_SECS: u64 = HEARTBEAT_TIMEOUT_SECS;
+
 /// Stream type markers for yamux streams
 pub const STREAM_TYPE_PROXY: u8 = 0x00;
 pub const STREAM_TYPE_HEARTBEAT: u8 = 0x01;
@@ -397,5 +406,7 @@ mod tests {
         assert_eq!(DEFAULT_PUBLIC_PORT, 6210);
         assert_eq!(HEARTBEAT_INTERVAL_SECS, 15);
         assert_eq!(HEARTBEAT_TIMEOUT_SECS, 90);
+        assert_eq!(TAKEOVER_AFTER_MISSED_HEARTBEATS, 2);
+        assert_eq!(SESSION_STALE_SECS, 90);
     }
 }

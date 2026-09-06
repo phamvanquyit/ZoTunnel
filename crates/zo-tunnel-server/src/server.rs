@@ -33,6 +33,7 @@ pub enum YamuxCmd {
 #[derive(Clone)]
 pub struct YamuxHandle {
     cmd_tx: mpsc::Sender<YamuxCmd>,
+    abort: tokio::task::AbortHandle,
 }
 
 impl YamuxHandle {
@@ -45,6 +46,39 @@ impl YamuxHandle {
         reply_rx
             .await
             .map_err(|_| anyhow::anyhow!("yamux driver dropped"))?
+    }
+
+    pub fn abort(&self) {
+        self.abort.abort();
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.cmd_tx.is_closed()
+    }
+}
+
+#[cfg(test)]
+impl YamuxHandle {
+    pub fn mock() -> (Self, mpsc::Receiver<YamuxCmd>) {
+        let (cmd_tx, cmd_rx) = mpsc::channel(1);
+        let task = tokio::spawn(std::future::pending::<()>());
+        (
+            Self {
+                cmd_tx,
+                abort: task.abort_handle(),
+            },
+            cmd_rx,
+        )
+    }
+
+    pub fn mock_closed() -> Self {
+        let (cmd_tx, cmd_rx) = mpsc::channel(1);
+        drop(cmd_rx);
+        let task = tokio::spawn(async {});
+        Self {
+            cmd_tx,
+            abort: task.abort_handle(),
+        }
     }
 }
 
@@ -60,13 +94,13 @@ fn spawn_yamux_driver<S>(
     mode: yamux::Mode,
     client_id: String,
     supports_heartbeat: bool,
+    last_activity: Arc<std::sync::Mutex<std::time::Instant>>,
+    missed_heartbeats: Arc<std::sync::atomic::AtomicU32>,
 ) -> (YamuxHandle, tokio::task::JoinHandle<()>)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<YamuxCmd>(64);
-
-    let handle = YamuxHandle { cmd_tx };
 
     let task = tokio::spawn(async move {
         let compat = stream.compat();
@@ -77,7 +111,6 @@ where
             tokio::time::interval(Duration::from_secs(HEARTBEAT_INTERVAL_SECS));
         heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         heartbeat_interval.tick().await;
-        let mut missed_heartbeats: u32 = 0;
         const MAX_MISSED: u32 = 5;
 
         let mut pending_open: Option<oneshot::Sender<anyhow::Result<yamux::Stream>>> = None;
@@ -153,19 +186,19 @@ where
                                 }
                                 if want_hb_stream {
                                     want_hb_stream = false;
-                                    missed_heartbeats += 1;
+                                    let n = missed_heartbeats.fetch_add(1, Ordering::Relaxed) + 1;
                                     tracing::warn!(
                                         "💔 Heartbeat open failed for '{}': {} ({}/{})",
                                         client_id,
                                         e,
-                                        missed_heartbeats,
+                                        n,
                                         MAX_MISSED
                                     );
-                                    if missed_heartbeats >= MAX_MISSED {
+                                    if n >= MAX_MISSED {
                                         tracing::error!(
                                             "💀 Connection dead for '{}' — {} missed heartbeats, disconnecting",
                                             client_id,
-                                            missed_heartbeats
+                                            n
                                         );
                                         break;
                                     }
@@ -192,23 +225,26 @@ where
                     hb_in_flight = false;
                     match done {
                         Some(Ok(())) => {
-                            missed_heartbeats = 0;
+                            missed_heartbeats.store(0, Ordering::Relaxed);
+                            if let Ok(mut ts) = last_activity.lock() {
+                                *ts = std::time::Instant::now();
+                            }
                             tracing::trace!("💓 Heartbeat OK for '{}'", client_id);
                         }
                         Some(Err(e)) => {
-                            missed_heartbeats += 1;
+                            let n = missed_heartbeats.fetch_add(1, Ordering::Relaxed) + 1;
                             tracing::warn!(
                                 "💔 Heartbeat failed for '{}': {} ({}/{})",
                                 client_id,
                                 e,
-                                missed_heartbeats,
+                                n,
                                 MAX_MISSED
                             );
-                            if missed_heartbeats >= MAX_MISSED {
+                            if n >= MAX_MISSED {
                                 tracing::error!(
                                     "💀 Connection dead for '{}' — {} missed heartbeats, disconnecting",
                                     client_id,
-                                    missed_heartbeats
+                                    n
                                 );
                                 break;
                             }
@@ -220,6 +256,10 @@ where
         }
     });
 
+    let handle = YamuxHandle {
+        cmd_tx,
+        abort: task.abort_handle(),
+    };
     (handle, task)
 }
 
@@ -473,22 +513,46 @@ impl Server {
             }
         };
 
+        let last_activity = Arc::new(std::sync::Mutex::new(std::time::Instant::now()));
+        let missed_heartbeats = Arc::new(std::sync::atomic::AtomicU32::new(0));
         let (yamux_handle, driver_task) = spawn_yamux_driver(
             stream,
             yamux::Mode::Server,
             client_id.clone(),
             supports_heartbeat,
+            last_activity.clone(),
+            missed_heartbeats.clone(),
         );
 
-        let _entry =
-            match registry.register(client_id.clone(), yamux_handle.clone(), supports_heartbeat) {
-                Ok(e) => e,
-                Err(e) => {
-                    tracing::warn!("Registration failed for '{}': {}", client_id, e);
-                    driver_task.abort();
-                    return Ok(());
+        let entry = match registry.register(
+            client_id.clone(),
+            yamux_handle.clone(),
+            supports_heartbeat,
+            last_activity,
+            missed_heartbeats,
+        ) {
+            Ok((e, replaced)) => {
+                if replaced {
+                    tracing::info!(
+                        "♻️  Took over stale session for '{}' (total: {})",
+                        client_id,
+                        registry.count()
+                    );
+                } else {
+                    tracing::info!(
+                        "🟢 Client '{}' registered (total: {})",
+                        client_id,
+                        registry.count()
+                    );
                 }
-            };
+                e
+            }
+            Err(e) => {
+                tracing::warn!("Registration failed for '{}': {}", client_id, e);
+                driver_task.abort();
+                return Ok(());
+            }
+        };
 
         if let Some(ref mgr) = traefik {
             if let Err(e) = mgr.add_client(&client_id) {
@@ -496,27 +560,24 @@ impl Server {
             }
         }
 
-        tracing::info!(
-            "🟢 Client '{}' registered (total: {})",
-            client_id,
-            registry.count()
-        );
-
         let _ = driver_task.await;
 
-        registry.unregister(&client_id);
-
-        if let Some(ref mgr) = traefik {
-            if let Err(e) = mgr.remove_client(&client_id) {
-                tracing::warn!("⚠️  Traefik remove route failed: {:#}", e);
-            }
+        // Only drop the registry slot if this session is still current.
+        // A takeover registers a new session_id; the old task must not
+        // unregister the replacement. Keep the Traefik YAML so reconnects
+        // do not wait for a file-provider reload.
+        if registry.unregister(&client_id, entry.session_id) {
+            tracing::info!(
+                "🔴 Client '{}' disconnected (remaining: {})",
+                client_id,
+                registry.count()
+            );
+        } else {
+            tracing::debug!(
+                "♻️  Session for '{}' already replaced — skipping unregister",
+                client_id
+            );
         }
-
-        tracing::info!(
-            "🔴 Client '{}' disconnected (remaining: {})",
-            client_id,
-            registry.count()
-        );
 
         Ok(())
     }

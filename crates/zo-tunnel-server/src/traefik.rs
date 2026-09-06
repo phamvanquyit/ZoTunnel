@@ -138,11 +138,22 @@ impl TraefikManager {
             cr = self.config.cert_resolver,
         );
         let path = self.client_file(&safe);
+        if path.exists() {
+            if let Ok(existing) = std::fs::read_to_string(&path) {
+                if existing == content {
+                    return Ok(());
+                }
+            }
+        }
         std::fs::write(&path, content)?;
         tracing::info!("🔀 Traefik: added route for {}", host);
         Ok(())
     }
 
+    /// Delete a client's Traefik route file.
+    /// Disconnect no longer calls this — keeping the router avoids a Traefik
+    /// reload gap while the client reconnects.
+    #[allow(dead_code)]
     pub fn remove_client(&self, client_id: &str) -> anyhow::Result<()> {
         let safe = sanitize_id(client_id);
         let path = self.client_file(&safe);
@@ -206,5 +217,29 @@ mod tests {
     fn sanitize_keeps_safe_chars() {
         assert_eq!(sanitize_id("my-api_1"), "my-api_1");
         assert_eq!(sanitize_id("bad/name"), "bad_name");
+    }
+
+    #[test]
+    fn add_client_skips_identical_rewrite() {
+        let dir = std::env::temp_dir().join(format!("zo-tunnel-traefik-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mgr = TraefikManager::new(
+            TraefikConfig {
+                enabled: true,
+                config_dir: dir.to_string_lossy().into(),
+                ..Default::default()
+            },
+            "tunnel.example.com".into(),
+        );
+        mgr.add_client("omnivoice").unwrap();
+        let path = dir.join("zo-tunnel-omnivoice.yml");
+        let first = std::fs::read_to_string(&path).unwrap();
+        let mtime1 = std::fs::metadata(&path).unwrap().modified().unwrap();
+        mgr.add_client("omnivoice").unwrap();
+        let second = std::fs::read_to_string(&path).unwrap();
+        let mtime2 = std::fs::metadata(&path).unwrap().modified().unwrap();
+        assert_eq!(first, second);
+        assert_eq!(mtime1, mtime2);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -248,6 +248,7 @@ pub async fn handle_proxy_request(
         .fetch_sub(1, Ordering::Relaxed);
     metrics.active_connections.fetch_sub(1, Ordering::Relaxed);
 
+    client.touch();
     tracing::info!(
         "→ {} {} → '{}' → {}",
         resp.status().as_u16(),
