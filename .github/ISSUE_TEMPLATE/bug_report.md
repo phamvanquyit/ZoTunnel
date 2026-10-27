@@ -30,7 +30,7 @@ What actually happened. Include error messages or logs if available.
 
 - **OS:** [e.g., Ubuntu 22.04, macOS 14]
 - **Architecture:** [e.g., amd64, arm64]
-- **Zo Tunnel version:** [e.g., v0.0.4]
+- **Zo Tunnel version:** [e.g., v0.0.5]
 - **Install method:** [binary / cargo build / Docker]
 
 ## Logs

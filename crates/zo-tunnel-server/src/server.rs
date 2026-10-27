@@ -395,9 +395,9 @@ impl Server {
         tracing::info!("🧹 Cleaning up...");
         public_task.abort();
 
-        if let Some(ref mgr) = traefik_manager {
-            let _ = mgr.cleanup_clients();
-        }
+        // Keep Traefik client routers across restarts. Deleting them here used
+        // to leave public hosts on Traefik 404 until every client reconnected —
+        // and a wedged "already registered" session never rewrote the YAML.
 
         let connected = registry.count();
         if connected > 0 {
@@ -534,7 +534,7 @@ impl Server {
             Ok((e, replaced)) => {
                 if replaced {
                     tracing::info!(
-                        "♻️  Took over stale session for '{}' (total: {})",
+                        "♻️  Took over session for '{}' (total: {})",
                         client_id,
                         registry.count()
                     );
@@ -554,6 +554,8 @@ impl Server {
             }
         };
 
+        // Always (re)write the Traefik router — repairs a missing YAML if the
+        // file was deleted while a zombie session still held the name.
         if let Some(ref mgr) = traefik {
             if let Err(e) = mgr.add_client(&client_id) {
                 tracing::warn!("⚠️  Traefik add route failed: {:#}", e);

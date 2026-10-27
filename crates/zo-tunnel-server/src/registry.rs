@@ -26,14 +26,13 @@ impl ClientEntry {
         }
     }
 
-    /// Healthy duplicates stay registered. Takeover is allowed when:
-    /// - the yamux driver is gone, or
-    /// - two consecutive heartbeats have failed (not a single jitter miss), or
-    /// - there has been no activity for `SESSION_STALE_SECS` (driver stuck /
-    ///   legacy client with no heartbeat probes).
+    /// Whether this session still looks healthy for diagnostics/dashboard.
     ///
-    /// A poisoned `last_activity` lock is treated as dead so reconnect can
-    /// recover rather than wedging the name forever.
+    /// Registration no longer gates on this — reconnects always take over
+    /// (last writer wins) so a half-open zombie cannot wedge a tunnel name
+    /// while Traefik still points at a dead or missing route.
+    ///
+    /// A poisoned `last_activity` lock is treated as dead.
     pub fn is_alive(&self) -> bool {
         if self.handle.is_closed() {
             return false;
@@ -78,6 +77,8 @@ pub struct ClientInfo {
     pub bytes_out: u64,
     pub total_requests: u64,
     pub active_streams: u64,
+    /// Heartbeat / activity liveness probe (informational; reconnect always takes over).
+    pub healthy: bool,
 }
 
 /// Thread-safe client registry.
@@ -94,9 +95,9 @@ impl Registry {
         }
     }
 
-    /// Register a client. Replaces a stale session with the same id.
-    /// Returns `(entry, replaced)`. Errors if the id is reserved or a healthy
-    /// session is already registered.
+    /// Register a client. Same `client_id` always replaces the previous session
+    /// (last writer wins) so reconnects recover from zombie/half-open TCP.
+    /// Returns `(entry, replaced)`. Errors only if the id is reserved.
     pub fn register(
         &self,
         client_id: String,
@@ -128,10 +129,9 @@ impl Registry {
 
         match self.clients.entry(client_id.clone()) {
             Entry::Occupied(mut occupied) => {
-                if occupied.get().is_alive() {
-                    anyhow::bail!("Client '{}' already registered", client_id);
-                }
                 let old = occupied.insert(entry.clone());
+                // Drop the previous yamux driver so its task exits and does not
+                // keep answering heartbeats / proxying under the old session.
                 old.handle.abort();
                 Ok((entry, true))
             }
@@ -167,6 +167,7 @@ impl Registry {
                     bytes_out: e.metrics.bytes_out.load(Ordering::Relaxed),
                     total_requests: e.metrics.requests.load(Ordering::Relaxed),
                     active_streams: e.metrics.active_streams.load(Ordering::Relaxed),
+                    healthy: e.is_alive(),
                 }
             })
             .collect()
@@ -216,7 +217,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reject_healthy_duplicate() {
+    async fn healthy_duplicate_is_taken_over() {
+        // Reconnect must replace a still-"alive" session. Refusing here is what
+        // wedged omnivoice behind Traefik 404 while the zombie kept the name.
         let reg = Registry::new();
         let (h1, _rx) = live_handle();
         let (last, missed) = activity(0, 0);
@@ -225,15 +228,18 @@ mod tests {
             .expect("first");
         let (h2, _rx2) = live_handle();
         let (last2, missed2) = activity(0, 0);
-        match reg.register("app".into(), h2, true, last2, missed2) {
-            Ok(_) => panic!("expected duplicate to fail"),
-            Err(e) => assert!(e.to_string().contains("already registered")),
-        }
-        assert_eq!(reg.get("app").unwrap().session_id, first.session_id);
+        let (second, replaced) = reg
+            .register("app".into(), h2, true, last2, missed2)
+            .expect("takeover");
+        assert!(replaced);
+        assert_ne!(first.session_id, second.session_id);
+        assert_eq!(reg.get("app").unwrap().session_id, second.session_id);
+        assert!(!reg.unregister("app", first.session_id));
+        assert!(reg.unregister("app", second.session_id));
     }
 
     #[tokio::test]
-    async fn one_missed_heartbeat_does_not_takeover() {
+    async fn takeover_aborts_previous_even_with_one_missed_heartbeat() {
         let reg = Registry::new();
         let (h1, _rx) = live_handle();
         let (last, missed) = activity(25, 1);
@@ -242,11 +248,11 @@ mod tests {
             .expect("old");
         let (h2, _rx2) = live_handle();
         let (last2, missed2) = activity(0, 0);
-        match reg.register("app".into(), h2, true, last2, missed2) {
-            Ok(_) => panic!("single miss must not evict a live session"),
-            Err(e) => assert!(e.to_string().contains("already registered")),
-        }
-        assert_eq!(reg.get("app").unwrap().session_id, old.session_id);
+        let (new, replaced) = reg
+            .register("app".into(), h2, true, last2, missed2)
+            .expect("takeover");
+        assert!(replaced);
+        assert_ne!(old.session_id, new.session_id);
     }
 
     #[tokio::test]
@@ -303,7 +309,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn legacy_client_stays_until_idle_or_closed() {
+    async fn legacy_client_reconnect_takes_over() {
         let reg = Registry::new();
         let (h1, _rx) = live_handle();
         let (last, missed) = activity(25, 0);
@@ -312,11 +318,11 @@ mod tests {
             .expect("old");
         let (h2, _rx2) = live_handle();
         let (last2, missed2) = activity(0, 0);
-        match reg.register("app".into(), h2, false, last2, missed2) {
-            Ok(_) => panic!("idle-but-fresh legacy client must not be kicked"),
-            Err(e) => assert!(e.to_string().contains("already registered")),
-        }
-        assert_eq!(reg.get("app").unwrap().session_id, old.session_id);
+        let (new, replaced) = reg
+            .register("app".into(), h2, false, last2, missed2)
+            .expect("takeover");
+        assert!(replaced);
+        assert_ne!(old.session_id, new.session_id);
     }
 
     #[tokio::test]

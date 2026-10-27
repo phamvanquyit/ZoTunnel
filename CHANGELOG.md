@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-10-27
+
+### Fixed
+
+- Zombie / half-open sessions no longer block reconnect: same `client_id` always takes over (last writer wins), so a wedged registry slot cannot leave the public host on Traefik 404
+- Server shutdown no longer deletes `zo-tunnel-*.yml` routers, avoiding a public 404 window (and permanent 404 if reconnect then hits "already registered")
+- Traefik client route is rewritten on every successful register/takeover to repair a missing YAML
+
 ## [0.0.4] - 2026-09-06
 
 ### Fixed
@@ -49,7 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docker image publish to Docker Hub on `main`
 - Multi-platform client binaries (Linux/macOS, amd64/arm64)
 
-[Unreleased]: https://github.com/phamvanquyit/ZoTunnel/compare/v0.0.4...HEAD
+[Unreleased]: https://github.com/phamvanquyit/ZoTunnel/compare/v0.0.5...HEAD
+[0.0.5]: https://github.com/phamvanquyit/ZoTunnel/compare/v0.0.4...v0.0.5
 [0.0.4]: https://github.com/phamvanquyit/ZoTunnel/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/phamvanquyit/ZoTunnel/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/phamvanquyit/ZoTunnel/compare/v0.0.1...v0.0.2

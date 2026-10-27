@@ -151,8 +151,8 @@ impl TraefikManager {
     }
 
     /// Delete a client's Traefik route file.
-    /// Disconnect no longer calls this — keeping the router avoids a Traefik
-    /// reload gap while the client reconnects.
+    /// Not used on disconnect/shutdown — keeping the router avoids a Traefik
+    /// reload gap (and public 404) while the client reconnects.
     #[allow(dead_code)]
     pub fn remove_client(&self, client_id: &str) -> anyhow::Result<()> {
         let safe = sanitize_id(client_id);
@@ -164,7 +164,11 @@ impl TraefikManager {
         Ok(())
     }
 
-    pub fn cleanup_clients(&self) -> anyhow::Result<()> {
+    /// Remove legacy `zo-*.yml` leftovers only. Client routers
+    /// (`zo-tunnel-{name}.yml`) are intentionally kept so a server restart
+    /// does not blank public hosts before clients reconnect.
+    #[allow(dead_code)]
+    pub fn cleanup_legacy_routes(&self) -> anyhow::Result<()> {
         let dir = Path::new(&self.config.config_dir);
         if !dir.is_dir() {
             return Ok(());
@@ -173,14 +177,7 @@ impl TraefikManager {
             let entry = entry?;
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if name.starts_with("zo-tunnel-") && name.ends_with(".yml") && name != BASE_FILE {
-                // keep dashboard-named leftovers from older generators if any
-                if name == "zo-tunnel-dashboard.yml" {
-                    continue;
-                }
-                let _ = std::fs::remove_file(entry.path());
-            }
-            // also clean legacy zo-*.yml (except base)
+            // legacy zo-*.yml (except base / current zo-tunnel-* routers)
             if name.starts_with("zo-")
                 && name.ends_with(".yml")
                 && !name.starts_with("zo-tunnel-")
@@ -190,6 +187,12 @@ impl TraefikManager {
             }
         }
         Ok(())
+    }
+
+    /// Old name kept for callers/tests; does not delete live client routers.
+    #[allow(dead_code)]
+    pub fn cleanup_clients(&self) -> anyhow::Result<()> {
+        self.cleanup_legacy_routes()
     }
 
     fn client_file(&self, safe_id: &str) -> PathBuf {
@@ -240,6 +243,27 @@ mod tests {
         let mtime2 = std::fs::metadata(&path).unwrap().modified().unwrap();
         assert_eq!(first, second);
         assert_eq!(mtime1, mtime2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cleanup_clients_keeps_live_routers() {
+        let dir = std::env::temp_dir().join(format!("zo-tunnel-traefik-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mgr = TraefikManager::new(
+            TraefikConfig {
+                enabled: true,
+                config_dir: dir.to_string_lossy().into(),
+                ..Default::default()
+            },
+            "tunnel.example.com".into(),
+        );
+        mgr.add_client("omnivoice").unwrap();
+        let legacy = dir.join("zo-oldstyle.yml");
+        std::fs::write(&legacy, "legacy\n").unwrap();
+        mgr.cleanup_clients().unwrap();
+        assert!(dir.join("zo-tunnel-omnivoice.yml").exists());
+        assert!(!legacy.exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
